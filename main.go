@@ -184,6 +184,7 @@ Where channel_id and thread_ts are the values provided as input parameters`),
 	case "stdio":
 		if err := server.ServeStdio(s, server.WithStdioContextFunc(func(ctx context.Context) context.Context {
 			ctx = WithSlackTokenFromEnv(ctx)
+			ctx = WithChannelTypesFromEnv(ctx)
 
 			// Add session ID from ClientSession
 			if session := server.ClientSessionFromContext(ctx); session != nil {
@@ -199,6 +200,7 @@ Where channel_id and thread_ts are the values provided as input parameters`),
 		httpServer := server.NewStreamableHTTPServer(s,
 			server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
 				ctx = WithSlackTokenFromHTTP(ctx, r)
+				ctx = WithChannelTypesFromEnv(ctx)
 
 				// Add session ID from ClientSession
 				if session := server.ClientSessionFromContext(ctx); session != nil {

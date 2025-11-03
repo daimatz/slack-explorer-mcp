@@ -73,11 +73,59 @@ Slackのメッセージやスレッドなどの**情報の取得**に特化し�
     }
     ```
 
+    **オプション: チャンネルタイプフィルタリング**
+
+    検索結果を特定のチャンネルタイプに制限したい場合（共有MCPサーバーで公開チャンネルのみに制限する等）、`SLACK_CHANNEL_TYPES`環境変数を設定します：
+
+    ```json
+    {
+      "mcpServers": {
+        "slack-explorer-mcp": {
+          "command": "docker",
+          "args": ["run", "-i", "--rm", "--pull", "always",
+            "-e", "SLACK_USER_TOKEN=xoxp-your-token-here",
+            "-e", "SLACK_CHANNEL_TYPES=public",
+            "ghcr.io/shibayu36/slack-explorer-mcp:latest"
+          ]
+        }
+      }
+    }
+    ```
+
+    指定可能な値（カンマ区切りで複数指定可能）：
+    - `dm`: 1:1ダイレクトメッセージのみ
+    - `mpim`: グループDMのみ
+    - `public`: 公開チャンネルのみ
+    - `private`: 非公開チャンネル/グループのみ
+    - 未指定の場合: 全タイプから検索（デフォルト）
+
+    **フィルタリング方式**:
+    - `dm`または`mpim`を**単独で**指定した場合: Slack APIの検索修飾子（`is:dm`, `is:mpim`）を使用（効率的、ページネーション対応）
+    - `public`、`private`、または複数のタイプを組み合わせた場合: 複数ページを自動的に取得してフィルタリング。リクエストされた件数に達するか、全ページを取得するまで繰り返します
+
+    **重要な制限事項**:
+    - `public`、`private`、または複数タイプ指定時、**`page`パラメータは1のみサポート**されます。`page > 1`を指定するとエラーが返されます
+    - これは、クライアント側フィルタリングではフィルタリング後の結果数が事前に分からないため、正確なページネーションが不可能なためです
+    - 複数ページフェッチが必要な場合、API呼び出し回数が増加する可能性があります
+    - `count`パラメータを調整することで、より多くの結果を取得できます
+
+    例:
+    - `SLACK_CHANNEL_TYPES=dm` （DMのみ、Slack API側でフィルタリング）
+    - `SLACK_CHANNEL_TYPES=public` （公開チャンネルのみ、複数ページ自動取得）
+    - `SLACK_CHANNEL_TYPES=public,private` （チャンネルのみ、DMを除外、複数ページ自動取得）
+
     Claude Codeを使用している場合:
 
     ```bash
+    # 基本設定
     claude mcp add slack-explorer-mcp -- docker run -i --rm --pull always \
       -e SLACK_USER_TOKEN=xoxp-your-token-here \
+      ghcr.io/shibayu36/slack-explorer-mcp:latest
+
+    # 公開チャンネルのみに制限する場合
+    claude mcp add slack-explorer-mcp -- docker run -i --rm --pull always \
+      -e SLACK_USER_TOKEN=xoxp-your-token-here \
+      -e SLACK_CHANNEL_TYPES=public \
       ghcr.io/shibayu36/slack-explorer-mcp:latest
     ```
 

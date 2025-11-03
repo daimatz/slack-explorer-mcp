@@ -1022,3 +1022,642 @@ func TestHandler_SearchUsersByName(t *testing.T) {
 		mockClient.AssertExpectations(t)
 	})
 }
+
+func TestHandler_SearchMessages_ChannelTypeFiltering(t *testing.T) {
+	t.Run("filters by public channel type", func(t *testing.T) {
+		mockClient := &SlackClientMock{}
+
+		mockResponse := &slack.SearchMessages{
+			Matches: []slack.SearchMessage{
+				{
+					Type:      "message",
+					User:      "U1234567",
+					Text:      "Public channel message",
+					Timestamp: "1234567890.123456",
+					Permalink: "https://workspace.slack.com/archives/C1234567/p1234567890123456",
+					Channel: slack.CtxChannel{
+						ID:        "C1234567",
+						Name:      "general",
+						IsPrivate: false,
+					},
+				},
+				{
+					Type:      "message",
+					User:      "U2345678",
+					Text:      "Private channel message",
+					Timestamp: "1234567891.123456",
+					Permalink: "https://workspace.slack.com/archives/G2345678/p1234567891123456",
+					Channel: slack.CtxChannel{
+						ID:        "G2345678",
+						Name:      "private-group",
+						IsPrivate: true,
+					},
+				},
+				{
+					Type:      "message",
+					User:      "U3456789",
+					Text:      "DM message",
+					Timestamp: "1234567892.123456",
+					Permalink: "https://workspace.slack.com/archives/D3456789/p1234567892123456",
+					Channel: slack.CtxChannel{
+						ID:        "D3456789",
+						Name:      "directmessage",
+						IsPrivate: true,
+					},
+				},
+			},
+			Paging: slack.Paging{
+				Count: 3,
+				Total: 3,
+				Page:  1,
+				Pages: 1,
+			},
+			Total: 3,
+		}
+
+		expectedQuery := "test message"
+		expectedParams := slack.SearchParameters{
+			Sort:          "score",
+			SortDirection: "desc",
+			Highlight:     false,
+			Count:         20,
+			Page:          1,
+		}
+		mockClient.On("SearchMessages", expectedQuery, expectedParams).Return(mockResponse, nil)
+
+		handler := &Handler{
+			getClient: func(ctx context.Context) (SlackClient, error) {
+				return mockClient, nil
+			},
+		}
+
+		req := mcp.CallToolRequest{
+			Params: struct {
+				Name      string    `json:"name"`
+				Arguments any       `json:"arguments,omitempty"`
+				Meta      *mcp.Meta `json:"_meta,omitempty"`
+			}{
+				Name: "search_messages",
+				Arguments: map[string]interface{}{
+					"query": "test message",
+				},
+			},
+		}
+
+		// Set channel types via context (simulating environment variable)
+		ctx := context.WithValue(t.Context(), channelTypesKey{}, []string{"public"})
+		res, err := handler.SearchMessages(ctx, req)
+		assert.NoError(t, err)
+
+		var response map[string]interface{}
+		err = json.Unmarshal([]byte(res.Content[0].(mcp.TextContent).Text), &response)
+		assert.NoError(t, err)
+
+		messages := response["messages"].(map[string]interface{})
+		matches := messages["matches"].([]interface{})
+		assert.Equal(t, 1, len(matches))
+
+		firstMsg := matches[0].(map[string]interface{})
+		assert.Equal(t, "Public channel message", firstMsg["text"])
+		channel := firstMsg["channel"].(map[string]interface{})
+		assert.Equal(t, "C1234567", channel["id"])
+		assert.Equal(t, "public", channel["type"])
+
+		// Note: With multi-page fetching, pagination reflects the filtered results
+		pagination := messages["pagination"].(map[string]interface{})
+		assert.Equal(t, float64(1), pagination["total_count"], "total_count reflects filtered count")
+		assert.Equal(t, float64(1), pagination["per_page"], "per_page reflects filtered count")
+
+		mockClient.AssertExpectations(t)
+	})
+
+	t.Run("filters by multiple channel types", func(t *testing.T) {
+		mockClient := &SlackClientMock{}
+
+		mockResponse := &slack.SearchMessages{
+			Matches: []slack.SearchMessage{
+				{
+					Type:      "message",
+					User:      "U1234567",
+					Text:      "Public channel message",
+					Timestamp: "1234567890.123456",
+					Permalink: "https://workspace.slack.com/archives/C1234567/p1234567890123456",
+					Channel: slack.CtxChannel{
+						ID:        "C1234567",
+						Name:      "general",
+						IsPrivate: false,
+					},
+				},
+				{
+					Type:      "message",
+					User:      "U2345678",
+					Text:      "Private channel message",
+					Timestamp: "1234567891.123456",
+					Permalink: "https://workspace.slack.com/archives/G2345678/p1234567891123456",
+					Channel: slack.CtxChannel{
+						ID:        "G2345678",
+						Name:      "private-group",
+						IsPrivate: true,
+					},
+				},
+				{
+					Type:      "message",
+					User:      "U3456789",
+					Text:      "DM message",
+					Timestamp: "1234567892.123456",
+					Permalink: "https://workspace.slack.com/archives/D3456789/p1234567892123456",
+					Channel: slack.CtxChannel{
+						ID:        "D3456789",
+						Name:      "directmessage",
+						IsPrivate: true,
+					},
+				},
+			},
+			Paging: slack.Paging{
+				Count: 3,
+				Total: 3,
+				Page:  1,
+				Pages: 1,
+			},
+			Total: 3,
+		}
+
+		expectedQuery := "test"
+		expectedParams := slack.SearchParameters{
+			Sort:          "score",
+			SortDirection: "desc",
+			Highlight:     false,
+			Count:         20,
+			Page:          1,
+		}
+		mockClient.On("SearchMessages", expectedQuery, expectedParams).Return(mockResponse, nil)
+
+		handler := &Handler{
+			getClient: func(ctx context.Context) (SlackClient, error) {
+				return mockClient, nil
+			},
+		}
+
+		req := mcp.CallToolRequest{
+			Params: struct {
+				Name      string    `json:"name"`
+				Arguments any       `json:"arguments,omitempty"`
+				Meta      *mcp.Meta `json:"_meta,omitempty"`
+			}{
+				Name: "search_messages",
+				Arguments: map[string]interface{}{
+					"query": "test",
+				},
+			},
+		}
+
+		// Set channel types via context (simulating environment variable)
+		ctx := context.WithValue(t.Context(), channelTypesKey{}, []string{"private", "dm"})
+		res, err := handler.SearchMessages(ctx, req)
+		assert.NoError(t, err)
+
+		var response map[string]interface{}
+		err = json.Unmarshal([]byte(res.Content[0].(mcp.TextContent).Text), &response)
+		assert.NoError(t, err)
+
+		messages := response["messages"].(map[string]interface{})
+		matches := messages["matches"].([]interface{})
+		assert.Equal(t, 2, len(matches))
+
+		firstMsg := matches[0].(map[string]interface{})
+		assert.Equal(t, "Private channel message", firstMsg["text"])
+		secondMsg := matches[1].(map[string]interface{})
+		assert.Equal(t, "DM message", secondMsg["text"])
+
+		mockClient.AssertExpectations(t)
+	})
+
+	t.Run("returns error for invalid channel type", func(t *testing.T) {
+		handler := &Handler{
+			getClient: func(ctx context.Context) (SlackClient, error) {
+				return &SlackClientMock{}, nil
+			},
+		}
+
+		req := mcp.CallToolRequest{
+			Params: struct {
+				Name      string    `json:"name"`
+				Arguments any       `json:"arguments,omitempty"`
+				Meta      *mcp.Meta `json:"_meta,omitempty"`
+			}{
+				Name: "search_messages",
+				Arguments: map[string]interface{}{
+					"query": "test",
+				},
+			},
+		}
+
+		// Set invalid channel type via context (simulating environment variable)
+		ctx := context.WithValue(t.Context(), channelTypesKey{}, []string{"invalid_type"})
+		res, err := handler.SearchMessages(ctx, req)
+		assert.NoError(t, err)
+		assert.True(t, res.IsError)
+		assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "invalid channel_type")
+	})
+
+	t.Run("includes channel type information in response", func(t *testing.T) {
+		mockClient := &SlackClientMock{}
+
+		mockResponse := &slack.SearchMessages{
+			Matches: []slack.SearchMessage{
+				{
+					Type:      "message",
+					User:      "U1234567",
+					Text:      "MPIM message",
+					Timestamp: "1234567890.123456",
+					Permalink: "https://workspace.slack.com/archives/G1234567/p1234567890123456",
+					Channel: slack.CtxChannel{
+						ID:        "G1234567",
+						Name:      "mpdm-user1--user2--user3",
+						IsPrivate: true,
+						IsMPIM:    true,
+					},
+				},
+			},
+			Paging: slack.Paging{
+				Count: 1,
+				Total: 1,
+				Page:  1,
+				Pages: 1,
+			},
+			Total: 1,
+		}
+
+		expectedQuery := "test"
+		expectedParams := slack.SearchParameters{
+			Sort:          "score",
+			SortDirection: "desc",
+			Highlight:     false,
+			Count:         20,
+			Page:          1,
+		}
+		mockClient.On("SearchMessages", expectedQuery, expectedParams).Return(mockResponse, nil)
+
+		handler := &Handler{
+			getClient: func(ctx context.Context) (SlackClient, error) {
+				return mockClient, nil
+			},
+		}
+
+		req := mcp.CallToolRequest{
+			Params: struct {
+				Name      string    `json:"name"`
+				Arguments any       `json:"arguments,omitempty"`
+				Meta      *mcp.Meta `json:"_meta,omitempty"`
+			}{
+				Name: "search_messages",
+				Arguments: map[string]interface{}{
+					"query": "test",
+				},
+			},
+		}
+
+		res, err := handler.SearchMessages(t.Context(), req)
+		assert.NoError(t, err)
+
+		var response map[string]interface{}
+		err = json.Unmarshal([]byte(res.Content[0].(mcp.TextContent).Text), &response)
+		assert.NoError(t, err)
+
+		messages := response["messages"].(map[string]interface{})
+		matches := messages["matches"].([]interface{})
+		assert.Equal(t, 1, len(matches))
+
+		firstMsg := matches[0].(map[string]interface{})
+		channel := firstMsg["channel"].(map[string]interface{})
+		assert.Equal(t, "mpim", channel["type"])
+		assert.Equal(t, true, channel["is_mpim"])
+		assert.Equal(t, true, channel["is_private"])
+
+		mockClient.AssertExpectations(t)
+	})
+
+	t.Run("filters by mpim channel type correctly", func(t *testing.T) {
+		mockClient := &SlackClientMock{}
+
+		// Note: With is:mpim in query, Slack API returns only MPIM messages
+		mockResponse := &slack.SearchMessages{
+			Matches: []slack.SearchMessage{
+				{
+					Type:      "message",
+					User:      "U2345678",
+					Text:      "MPIM message",
+					Timestamp: "1234567891.123456",
+					Permalink: "https://workspace.slack.com/archives/G2345678/p1234567891123456",
+					Channel: slack.CtxChannel{
+						ID:        "G2345678",
+						Name:      "mpdm-user1--user2--user3",
+						IsPrivate: true,
+						IsMPIM:    true,
+					},
+				},
+			},
+			Paging: slack.Paging{
+				Count: 1,
+				Total: 1,
+				Page:  1,
+				Pages: 1,
+			},
+			Total: 1,
+		}
+
+		expectedQuery := "test is:mpim"
+		expectedParams := slack.SearchParameters{
+			Sort:          "score",
+			SortDirection: "desc",
+			Highlight:     false,
+			Count:         20,
+			Page:          1,
+		}
+		mockClient.On("SearchMessages", expectedQuery, expectedParams).Return(mockResponse, nil)
+
+		handler := &Handler{
+			getClient: func(ctx context.Context) (SlackClient, error) {
+				return mockClient, nil
+			},
+		}
+
+		req := mcp.CallToolRequest{
+			Params: struct {
+				Name      string    `json:"name"`
+				Arguments any       `json:"arguments,omitempty"`
+				Meta      *mcp.Meta `json:"_meta,omitempty"`
+			}{
+				Name: "search_messages",
+				Arguments: map[string]interface{}{
+					"query": "test",
+				},
+			},
+		}
+
+		// Set channel types via context (simulating environment variable)
+		ctx := context.WithValue(t.Context(), channelTypesKey{}, []string{"mpim"})
+		res, err := handler.SearchMessages(ctx, req)
+		assert.NoError(t, err)
+
+		var response map[string]interface{}
+		err = json.Unmarshal([]byte(res.Content[0].(mcp.TextContent).Text), &response)
+		assert.NoError(t, err)
+
+		messages := response["messages"].(map[string]interface{})
+		matches := messages["matches"].([]interface{})
+		assert.Equal(t, 1, len(matches))
+
+		firstMsg := matches[0].(map[string]interface{})
+		assert.Equal(t, "MPIM message", firstMsg["text"])
+		channel := firstMsg["channel"].(map[string]interface{})
+		assert.Equal(t, "G2345678", channel["id"])
+		assert.Equal(t, "mpim", channel["type"])
+
+		mockClient.AssertExpectations(t)
+	})
+
+	t.Run("fetches multiple pages when filtering by public type", func(t *testing.T) {
+		mockClient := &SlackClientMock{}
+
+		// Page 1: No public channels, only private
+		page1Response := &slack.SearchMessages{
+			Matches: []slack.SearchMessage{
+				{
+					Type:      "message",
+					User:      "U1",
+					Text:      "Private message 1",
+					Timestamp: "1234567890.000001",
+					Permalink: "https://workspace.slack.com/archives/G1/p1234567890000001",
+					Channel: slack.CtxChannel{
+						ID:        "G1",
+						Name:      "private1",
+						IsPrivate: true,
+					},
+				},
+			},
+			Paging: slack.Paging{
+				Count: 1,
+				Total: 3,
+				Page:  1,
+				Pages: 3,
+			},
+			Total: 3,
+		}
+
+		// Page 2: Has one public channel
+		page2Response := &slack.SearchMessages{
+			Matches: []slack.SearchMessage{
+				{
+					Type:      "message",
+					User:      "U2",
+					Text:      "Public message 1",
+					Timestamp: "1234567890.000002",
+					Permalink: "https://workspace.slack.com/archives/C1/p1234567890000002",
+					Channel: slack.CtxChannel{
+						ID:        "C1",
+						Name:      "public1",
+						IsPrivate: false,
+					},
+				},
+			},
+			Paging: slack.Paging{
+				Count: 1,
+				Total: 3,
+				Page:  2,
+				Pages: 3,
+			},
+			Total: 3,
+		}
+
+		// Page 3: Has another public channel
+		page3Response := &slack.SearchMessages{
+			Matches: []slack.SearchMessage{
+				{
+					Type:      "message",
+					User:      "U3",
+					Text:      "Public message 2",
+					Timestamp: "1234567890.000003",
+					Permalink: "https://workspace.slack.com/archives/C2/p1234567890000003",
+					Channel: slack.CtxChannel{
+						ID:        "C2",
+						Name:      "public2",
+						IsPrivate: false,
+					},
+				},
+			},
+			Paging: slack.Paging{
+				Count: 1,
+				Total: 3,
+				Page:  3,
+				Pages: 3,
+			},
+			Total: 3,
+		}
+
+		expectedQuery := "test"
+
+		// Mock expects multiple page requests
+		mockClient.On("SearchMessages", expectedQuery, slack.SearchParameters{
+			Sort:          "score",
+			SortDirection: "desc",
+			Highlight:     false,
+			Count:         20,
+			Page:          1,
+		}).Return(page1Response, nil).Once()
+
+		mockClient.On("SearchMessages", expectedQuery, slack.SearchParameters{
+			Sort:          "score",
+			SortDirection: "desc",
+			Highlight:     false,
+			Count:         20,
+			Page:          2,
+		}).Return(page2Response, nil).Once()
+
+		mockClient.On("SearchMessages", expectedQuery, slack.SearchParameters{
+			Sort:          "score",
+			SortDirection: "desc",
+			Highlight:     false,
+			Count:         20,
+			Page:          3,
+		}).Return(page3Response, nil).Once()
+
+		handler := &Handler{
+			getClient: func(ctx context.Context) (SlackClient, error) {
+				return mockClient, nil
+			},
+		}
+
+		req := mcp.CallToolRequest{
+			Params: struct {
+				Name      string    `json:"name"`
+				Arguments any       `json:"arguments,omitempty"`
+				Meta      *mcp.Meta `json:"_meta,omitempty"`
+			}{
+				Name: "search_messages",
+				Arguments: map[string]interface{}{
+					"query": "test",
+				},
+			},
+		}
+
+		// Set channel types via context (public only)
+		ctx := context.WithValue(t.Context(), channelTypesKey{}, []string{"public"})
+		res, err := handler.SearchMessages(ctx, req)
+		assert.NoError(t, err)
+
+		var response map[string]interface{}
+		err = json.Unmarshal([]byte(res.Content[0].(mcp.TextContent).Text), &response)
+		assert.NoError(t, err)
+
+		messages := response["messages"].(map[string]interface{})
+		matches := messages["matches"].([]interface{})
+
+		// Should have fetched multiple pages and returned all public messages
+		assert.Equal(t, 2, len(matches), "should have 2 public messages from pages 2 and 3")
+
+		firstMsg := matches[0].(map[string]interface{})
+		assert.Equal(t, "Public message 1", firstMsg["text"])
+
+		secondMsg := matches[1].(map[string]interface{})
+		assert.Equal(t, "Public message 2", secondMsg["text"])
+
+		// Verify all pages were fetched
+		mockClient.AssertExpectations(t)
+	})
+
+	t.Run("returns error when page > 1 with client-side filtering", func(t *testing.T) {
+		handler := &Handler{
+			getClient: func(ctx context.Context) (SlackClient, error) {
+				return &SlackClientMock{}, nil
+			},
+		}
+
+		req := mcp.CallToolRequest{
+			Params: struct {
+				Name      string    `json:"name"`
+				Arguments any       `json:"arguments,omitempty"`
+				Meta      *mcp.Meta `json:"_meta,omitempty"`
+			}{
+				Name: "search_messages",
+				Arguments: map[string]interface{}{
+					"query": "test",
+					"page":  2,
+				},
+			},
+		}
+
+		// Set channel types that require client-side filtering (public)
+		ctx := context.WithValue(t.Context(), channelTypesKey{}, []string{"public"})
+		res, err := handler.SearchMessages(ctx, req)
+		assert.NoError(t, err)
+		assert.True(t, res.IsError)
+		assert.Contains(t, res.Content[0].(mcp.TextContent).Text, "pagination (page > 1) is not supported")
+	})
+
+	t.Run("allows page > 1 with server-side filtering", func(t *testing.T) {
+		mockClient := &SlackClientMock{}
+
+		mockResponse := &slack.SearchMessages{
+			Matches: []slack.SearchMessage{
+				{
+					Type:      "message",
+					User:      "U1",
+					Text:      "DM message",
+					Timestamp: "1234567890.123456",
+					Permalink: "https://workspace.slack.com/archives/D1/p1234567890123456",
+					Channel: slack.CtxChannel{
+						ID:        "D1",
+						Name:      "dm",
+						IsPrivate: true,
+					},
+				},
+			},
+			Paging: slack.Paging{
+				Count: 1,
+				Total: 10,
+				Page:  2,
+				Pages: 5,
+			},
+			Total: 10,
+		}
+
+		expectedQuery := "test is:dm"
+		expectedParams := slack.SearchParameters{
+			Sort:          "score",
+			SortDirection: "desc",
+			Highlight:     false,
+			Count:         20,
+			Page:          2,
+		}
+		mockClient.On("SearchMessages", expectedQuery, expectedParams).Return(mockResponse, nil)
+
+		handler := &Handler{
+			getClient: func(ctx context.Context) (SlackClient, error) {
+				return mockClient, nil
+			},
+		}
+
+		req := mcp.CallToolRequest{
+			Params: struct {
+				Name      string    `json:"name"`
+				Arguments any       `json:"arguments,omitempty"`
+				Meta      *mcp.Meta `json:"_meta,omitempty"`
+			}{
+				Name: "search_messages",
+				Arguments: map[string]interface{}{
+					"query": "test",
+					"page":  2,
+				},
+			},
+		}
+
+		// Set dm type (server-side filtering, pagination allowed)
+		ctx := context.WithValue(t.Context(), channelTypesKey{}, []string{"dm"})
+		res, err := handler.SearchMessages(ctx, req)
+		assert.NoError(t, err)
+		assert.False(t, res.IsError)
+
+		mockClient.AssertExpectations(t)
+	})
+}

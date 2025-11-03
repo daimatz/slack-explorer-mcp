@@ -73,11 +73,59 @@ A Model Context Protocol (MCP) server specialized in **retrieving information** 
     }
     ```
 
+    **Optional: Channel Type Filtering**
+
+    To restrict search results to specific channel types (e.g., public channels only in shared MCP server environments), set the `SLACK_CHANNEL_TYPES` environment variable:
+
+    ```json
+    {
+      "mcpServers": {
+        "slack-explorer-mcp": {
+          "command": "docker",
+          "args": ["run", "-i", "--rm", "--pull", "always",
+            "-e", "SLACK_USER_TOKEN=xoxp-your-token-here",
+            "-e", "SLACK_CHANNEL_TYPES=public",
+            "ghcr.io/shibayu36/slack-explorer-mcp:latest"
+          ]
+        }
+      }
+    }
+    ```
+
+    Available values (comma-separated for multiple):
+    - `dm`: 1:1 direct messages only
+    - `mpim`: Group DMs only
+    - `public`: Public channels only
+    - `private`: Private channels/groups only
+    - If not specified: Search all types (default)
+
+    **Filtering Strategy**:
+    - When `dm` or `mpim` is specified **alone**: Uses Slack API search modifiers (`is:dm`, `is:mpim`) for efficient server-side filtering (supports pagination)
+    - When `public`, `private`, or **multiple types** are specified: Automatically fetches multiple pages and filters results until the requested count is satisfied or all pages are exhausted
+
+    **Important Limitations**:
+    - When `public`, `private`, or multiple types are configured, **only `page=1` is supported**. Requests with `page > 1` will return an error
+    - This is because client-side filtering cannot determine the filtered result count in advance, making accurate pagination impossible
+    - Multi-page fetching may increase API call count as it retrieves results from multiple pages to satisfy the filter
+    - Adjust the `count` parameter to retrieve more results in a single request
+
+    Examples:
+    - `SLACK_CHANNEL_TYPES=dm` (DMs only, server-side filtering)
+    - `SLACK_CHANNEL_TYPES=public` (public channels only, multi-page fetching)
+    - `SLACK_CHANNEL_TYPES=public,private` (channels only, excluding DMs, multi-page fetching)
+
     If you're using Claude Code:
 
     ```bash
+    # Basic configuration
     claude mcp add slack-explorer-mcp -- docker run -i --rm --pull always \
       -e SLACK_USER_TOKEN=xoxp-your-token-here \
+      ghcr.io/shibayu36/slack-explorer-mcp:latest
+
+    # Restrict to public channels only
+    claude mcp add slack-explorer-mcp -- docker run -i --rm --pull always \
+      -e SLACK_USER_TOKEN=xoxp-your-token-here \
+      -e SLACK_CHANNEL_TYPES=public \
       ghcr.io/shibayu36/slack-explorer-mcp:latest
     ```
 

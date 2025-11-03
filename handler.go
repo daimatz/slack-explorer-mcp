@@ -37,8 +37,11 @@ type SearchMessage struct {
 }
 
 type ChannelInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Type      string `json:"type,omitempty"`
+	IsPrivate bool   `json:"is_private,omitempty"`
+	IsMPIM    bool   `json:"is_mpim,omitempty"`
 }
 
 type SearchPagination struct {
@@ -82,30 +85,54 @@ func (h *Handler) SearchMessages(ctx context.Context, request mcp.CallToolReques
 		return mcp.NewToolResultError(ErrSlackTokenNotConfigured), nil
 	}
 
+	// Get channel types from context (set via environment variable at startup)
+	channelTypes := ChannelTypesFromContext(ctx)
+	if err := h.validateChannelTypes(channelTypes); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Validate pagination compatibility with channel type filtering
+	requestedPage := request.GetInt("page", 1)
+	needsMultiPageFetch := len(channelTypes) > 0 && !h.isServerSideFilterable(channelTypes)
+	if needsMultiPageFetch && requestedPage > 1 {
+		return mcp.NewToolResultError("pagination (page > 1) is not supported when SLACK_CHANNEL_TYPES includes 'public', 'private', or multiple types. Please use page=1 and adjust 'count' parameter instead"), nil
+	}
+
 	query, params, err := h.buildSearchParams(buildSearchParamsRequest{
-		Query:     request.GetString("query", ""),
-		InChannel: request.GetString("in_channel", ""),
-		FromUser:  request.GetString("from_user", ""),
-		With:      request.GetStringSlice("with", []string{}),
-		Before:    request.GetString("before", ""),
-		After:     request.GetString("after", ""),
-		On:        request.GetString("on", ""),
-		During:    request.GetString("during", ""),
-		Has:       request.GetStringSlice("has", []string{}),
-		HasMy:     request.GetStringSlice("hasmy", []string{}),
-		Highlight: request.GetBool("highlight", false),
-		Sort:      request.GetString("sort", "score"),
-		SortDir:   request.GetString("sort_dir", "desc"),
-		Count:     request.GetInt("count", 20),
-		Page:      request.GetInt("page", 1),
+		Query:        request.GetString("query", ""),
+		InChannel:    request.GetString("in_channel", ""),
+		ChannelTypes: channelTypes,
+		FromUser:     request.GetString("from_user", ""),
+		With:         request.GetStringSlice("with", []string{}),
+		Before:       request.GetString("before", ""),
+		After:        request.GetString("after", ""),
+		On:           request.GetString("on", ""),
+		During:       request.GetString("during", ""),
+		Has:          request.GetStringSlice("has", []string{}),
+		HasMy:        request.GetStringSlice("hasmy", []string{}),
+		Highlight:    request.GetBool("highlight", false),
+		Sort:         request.GetString("sort", "score"),
+		SortDir:      request.GetString("sort_dir", "desc"),
+		Count:        request.GetInt("count", 20),
+		Page:         request.GetInt("page", 1),
 	})
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	searchResult, err := client.SearchMessages(query, params)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+	var searchResult *slack.SearchMessages
+	if needsMultiPageFetch {
+		// Fetch multiple pages and filter until we have enough results
+		searchResult, err = h.fetchAndFilterMultiplePages(client, query, params, channelTypes)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+	} else {
+		// Single page fetch (either no filtering or server-side filtering)
+		searchResult, err = client.SearchMessages(query, params)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 	}
 
 	response := h.convertToSearchResponse(searchResult)
@@ -119,21 +146,22 @@ func (h *Handler) SearchMessages(ctx context.Context, request mcp.CallToolReques
 }
 
 type buildSearchParamsRequest struct {
-	Query     string
-	InChannel string
-	FromUser  string
-	With      []string
-	Before    string
-	After     string
-	On        string
-	During    string
-	Has       []string
-	HasMy     []string
-	Highlight bool
-	Sort      string
-	SortDir   string
-	Count     int
-	Page      int
+	Query        string
+	InChannel    string
+	ChannelTypes []string
+	FromUser     string
+	With         []string
+	Before       string
+	After        string
+	On           string
+	During       string
+	Has          []string
+	HasMy        []string
+	Highlight    bool
+	Sort         string
+	SortDir      string
+	Count        int
+	Page         int
 }
 
 // buildSearchParams validates parameters, applies defaults, and builds search query and parameters
@@ -152,6 +180,25 @@ func (h *Handler) buildSearchParams(request buildSearchParamsRequest) (string, s
 	if request.InChannel != "" {
 		queryParts = append(queryParts, fmt.Sprintf("in:%s", request.InChannel))
 	}
+
+	// Add channel type modifiers to query
+	// Note: Slack only supports is:dm and is:mpim modifiers.
+	// For 'public' and 'private', we need to use post-filtering which has pagination limitations.
+	//
+	// Strategy:
+	// - If only 'dm' is specified: add is:dm to query (server-side filtering)
+	// - If only 'mpim' is specified: add is:mpim to query (server-side filtering)
+	// - Otherwise: use post-filtering (client-side, subject to pagination issues)
+	if len(request.ChannelTypes) == 1 {
+		switch request.ChannelTypes[0] {
+		case "dm":
+			queryParts = append(queryParts, "is:dm")
+		case "mpim":
+			queryParts = append(queryParts, "is:mpim")
+			// For "public" or "private", no query modifier is available
+		}
+	}
+	// For multiple types or public/private, we'll rely on post-filtering
 
 	if request.FromUser != "" {
 		if !strings.HasPrefix(request.FromUser, "U") {
@@ -281,9 +328,13 @@ func (h *Handler) convertToSearchResponse(result *slack.SearchMessages) *SearchM
 		}
 
 		if match.Channel.ID != "" {
+			channelType := h.detectChannelType(match.Channel)
 			msg.Channel = &ChannelInfo{
-				ID:   match.Channel.ID,
-				Name: match.Channel.Name,
+				ID:        match.Channel.ID,
+				Name:      match.Channel.Name,
+				Type:      channelType,
+				IsPrivate: match.Channel.IsPrivate,
+				IsMPIM:    match.Channel.IsMPIM,
 			}
 		}
 
@@ -300,6 +351,148 @@ func (h *Handler) convertToSearchResponse(result *slack.SearchMessages) *SearchM
 	}
 
 	return response
+}
+
+func (h *Handler) validateChannelTypes(channelTypes []string) error {
+	validTypes := map[string]bool{
+		"public":  true,
+		"private": true,
+		"dm":      true,
+		"mpim":    true,
+	}
+
+	for _, ct := range channelTypes {
+		if !validTypes[ct] {
+			return fmt.Errorf("invalid channel_type: %s. Must be 'public', 'private', 'dm', or 'mpim'", ct)
+		}
+	}
+	return nil
+}
+
+// fetchAndFilterMultiplePages fetches multiple pages from Slack and filters them
+// until we have enough results or exhaust all pages
+func (h *Handler) fetchAndFilterMultiplePages(
+	client SlackClient,
+	query string,
+	params slack.SearchParameters,
+	channelTypes []string,
+) (*slack.SearchMessages, error) {
+	var allMatches []slack.SearchMessage
+	requestedCount := params.Count
+	currentPage := params.Page
+	var lastTotal int
+	var maxPages int
+
+	// Keep fetching pages until we have enough filtered results or run out of pages
+	for {
+		// Fetch current page
+		pageParams := params
+		pageParams.Page = currentPage
+
+		result, err := client.SearchMessages(query, pageParams)
+		if err != nil {
+			return nil, err
+		}
+
+		maxPages = result.Paging.Pages
+		lastTotal = result.Total
+
+		// Filter matches from this page
+		for _, match := range result.Matches {
+			channelType := h.detectChannelType(match.Channel)
+			if contains(channelTypes, channelType) {
+				allMatches = append(allMatches, match)
+			}
+		}
+
+		// Check if we have enough results or reached the end
+		if len(allMatches) >= requestedCount || currentPage >= maxPages {
+			break
+		}
+
+		// Move to next page
+		currentPage++
+	}
+
+	// Trim to requested count
+	if len(allMatches) > requestedCount {
+		allMatches = allMatches[:requestedCount]
+	}
+
+	// Build final result
+	finalResult := &slack.SearchMessages{
+		Matches: allMatches,
+		Paging: slack.Paging{
+			Count: len(allMatches),
+			Total: len(allMatches), // We don't know the true total across all pages
+			Page:  params.Page,
+			Pages: 1, // We've combined multiple pages into one result
+		},
+		Total: lastTotal, // Keep original total for reference
+	}
+
+	return finalResult, nil
+}
+
+func (h *Handler) filterByChannelTypes(
+	result *slack.SearchMessages,
+	channelTypes []string,
+) *slack.SearchMessages {
+	filtered := &slack.SearchMessages{
+		Paging: result.Paging,
+		Total:  result.Total,
+	}
+
+	for _, match := range result.Matches {
+		channelType := h.detectChannelType(match.Channel)
+		if contains(channelTypes, channelType) {
+			filtered.Matches = append(filtered.Matches, match)
+		}
+	}
+
+	// Note: We intentionally leave Paging.Count, Paging.Total, and Total unchanged
+	// because they represent Slack's original pagination state across all pages.
+	// Client-side filtering only sees the current page, so we cannot accurately
+	// compute the true total count without fetching all pages.
+	// The response may include fewer matches than indicated by these counters.
+
+	return filtered
+}
+
+func (h *Handler) detectChannelType(channel slack.CtxChannel) string {
+	// Check MPIM first, as MPIMs use G prefix but should be classified separately
+	if channel.IsMPIM {
+		return "mpim"
+	}
+
+	if strings.HasPrefix(channel.ID, "D") {
+		return "dm"
+	} else if strings.HasPrefix(channel.ID, "G") || (strings.HasPrefix(channel.ID, "C") && channel.IsPrivate) {
+		return "private"
+	} else if strings.HasPrefix(channel.ID, "C") && !channel.IsPrivate {
+		return "public"
+	}
+	return ""
+}
+
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+// isServerSideFilterable checks if the channel types can be filtered by Slack API
+// Returns true only if:
+// - Exactly one type is specified, AND
+// - That type is 'dm' or 'mpim' (which have Slack query modifiers)
+func (h *Handler) isServerSideFilterable(channelTypes []string) bool {
+	if len(channelTypes) != 1 {
+		return false
+	}
+	return channelTypes[0] == "dm" || channelTypes[0] == "mpim"
 }
 
 // GetThreadRepliesResponse represents the response structure for get_thread_replies
