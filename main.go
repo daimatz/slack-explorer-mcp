@@ -197,6 +197,21 @@ Where channel_id and thread_ts are the values provided as input parameters`),
 			os.Exit(1)
 		}
 	case "http":
+		host := os.Getenv("HTTP_HOST")
+		if host == "" {
+			host = "0.0.0.0"
+		}
+		port := os.Getenv("HTTP_PORT")
+		if port == "" {
+			port = "8080"
+		}
+		addr := host + ":" + port
+
+		mux := http.NewServeMux()
+		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+
 		httpServer := server.NewStreamableHTTPServer(s,
 			server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
 				ctx = WithSlackTokenFromHTTP(ctx, r)
@@ -209,16 +224,13 @@ Where channel_id and thread_ts are the values provided as input parameters`),
 
 				return ctx
 			}),
+			server.WithStreamableHTTPServer(&http.Server{
+				Addr:    addr,
+				Handler: mux,
+			}),
 		)
-		host := os.Getenv("HTTP_HOST")
-		if host == "" {
-			host = "0.0.0.0"
-		}
-		port := os.Getenv("HTTP_PORT")
-		if port == "" {
-			port = "8080"
-		}
-		addr := host + ":" + port
+		mux.Handle("/mcp", httpServer)
+
 		slog.Info("HTTP server listening", "address", addr)
 		if err := httpServer.Start(addr); err != nil {
 			slog.Error("Failed to serve http", "error", err)
